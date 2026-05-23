@@ -530,7 +530,7 @@ def _cmd_diff(args, _profile):
             idx = args.iteration
             if idx >= len(bnds):
                 print(f"Error: iteration {idx} out of range (0..{len(bnds) - 1})", file=sys.stderr)
-                return
+                sys.exit(1)
             bnd = bnds[idx]
             if bnd["before"]["start_ns"] is not None and bnd["before"]["end_ns"] is not None:
                 trim_before = (bnd["before"]["start_ns"], bnd["before"]["end_ns"])
@@ -541,7 +541,7 @@ def _cmd_diff(args, _profile):
                     "Error: no time window for this iteration in one or both profiles",
                     file=sys.stderr,
                 )
-                return
+                sys.exit(1)
 
     with _profile.open(args.before) as before, _profile.open(args.after) as after:
         if trim_before is not None and trim_after is not None:

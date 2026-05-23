@@ -428,6 +428,64 @@ def test_diff_cli_exit_on_regression_allows_inconclusive(tmp_path):
     assert "Diff gate failed" not in result.stderr
 
 
+def test_diff_cli_iteration_out_of_range_exits_nonzero(tmp_path):
+    before = tmp_path / "before.sqlite"
+    after = tmp_path / "after.sqlite"
+    _make_profile_with_runtime(str(before), marker="step")
+    _make_profile_with_runtime(str(after), marker="step")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nsys_ai",
+            "diff",
+            str(before),
+            str(after),
+            "--gpu",
+            "0",
+            "--iteration",
+            "1",
+            "--marker",
+            "step",
+            "--exit-on-regression",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 1
+    assert "iteration 1 out of range" in result.stderr
+
+
+def test_diff_cli_iteration_missing_window_exits_nonzero(tmp_path):
+    before = tmp_path / "before.sqlite"
+    after = tmp_path / "after.sqlite"
+    _make_profile_with_runtime(str(before), marker="step")
+    _make_profile(str(after), kernels=[])
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nsys_ai",
+            "diff",
+            str(before),
+            str(after),
+            "--gpu",
+            "0",
+            "--iteration",
+            "0",
+            "--marker",
+            "step",
+            "--exit-on-regression",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 1
+    assert "no time window for this iteration" in result.stderr
+
+
 def test_diff_tools_run_diff_tool_and_openai_tools(tmp_path):
     """Stage 6: run_diff_tool dispatches; TOOLS_DIFF_OPENAI and build_diff_system_prompt exist."""
     from nsys_ai import profile as profile_mod
