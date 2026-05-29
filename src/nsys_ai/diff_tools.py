@@ -60,6 +60,7 @@ def _top_k_payload(summary: ProfileDiffSummary, top_n: int = 5) -> tuple[list, l
             "name": k.name,
             "delta_ns": k.delta_ns,
             "delta_ms": round(k.delta_ns / 1e6, 3),
+            "selection": k.selection.to_dict() if k.selection else None,
             **impact(k),
         }
         for k in summary.top_regressions[:top_n]
@@ -69,6 +70,7 @@ def _top_k_payload(summary: ProfileDiffSummary, top_n: int = 5) -> tuple[list, l
             "name": k.name,
             "delta_ns": k.delta_ns,
             "delta_ms": round(k.delta_ns / 1e6, 3),
+            "selection": k.selection.to_dict() if k.selection else None,
             **impact(k),
         }
         for k in summary.top_improvements[:top_n]
@@ -499,11 +501,19 @@ def get_global_diff(
             "delta": round(wall_a - wall_b, 2),
         },
         "top_regressions": [
-            {"name": k.name, "delta_ms": round(k.delta_ns / 1e6, 3)}
+            {
+                "name": k.name,
+                "delta_ms": round(k.delta_ns / 1e6, 3),
+                "selection": k.selection.to_dict() if k.selection else None,
+            }
             for k in summary2.top_regressions[:10]
         ],
         "top_improvements": [
-            {"name": k.name, "delta_ms": round(k.delta_ns / 1e6, 3)}
+            {
+                "name": k.name,
+                "delta_ms": round(k.delta_ns / 1e6, 3),
+                "selection": k.selection.to_dict() if k.selection else None,
+            }
             for k in summary2.top_improvements[:10]
         ],
         "warnings": summary.warnings,
