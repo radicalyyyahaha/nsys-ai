@@ -165,6 +165,139 @@ def test_diff_engine_math(tmp_path):
     assert kC.classification == "new"
 
 
+def test_diff_top_regression_has_trace_selection(tmp_path):
+    from nsys_ai import profile as profile_mod
+    from nsys_ai.diff import diff_profiles
+
+    before = tmp_path / "before.sqlite"
+    after = tmp_path / "after.sqlite"
+    _make_profile(str(before), kernels=[(0, 10_000_000, 0, 7, 1, 1, 2)])
+    _make_profile(str(after), kernels=[(0, 30_000_000, 0, 7, 1, 1, 2)])
+
+    with profile_mod.open(str(before)) as b, profile_mod.open(str(after)) as a:
+        diff = diff_profiles(b, a, gpu=0, limit=10)
+
+    selection = diff.top_regressions[0].selection
+    assert selection is not None
+    assert selection.source == "diff"
+    assert selection.profile_id == diff.after.profile_id
+    assert selection.gpu_ids == [0]
+    assert "kA" in selection.label
+    assert "+20.00ms" in selection.label
+
+
+def test_diff_top_regression_selection_serializes_to_json(tmp_path):
+    before = tmp_path / "before.sqlite"
+    after = tmp_path / "after.sqlite"
+    _make_profile(str(before), kernels=[(0, 10_000_000, 0, 7, 1, 1, 2)])
+    _make_profile(str(after), kernels=[(0, 30_000_000, 0, 7, 1, 1, 2)])
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nsys_ai",
+            "diff",
+            str(before),
+            str(after),
+            "--gpu",
+            "0",
+            "--format",
+            "json",
+            "--no-ai",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    selection = payload["top_regressions"][0]["selection"]
+    assert selection["id"].startswith("sel_diff_")
+    assert selection["source"] == "diff"
+    assert selection["profile_id"] == payload["after"]["profile_id"]
+    assert selection["gpu_ids"] == [0]
+    assert "kA" in selection["label"]
+
+
+def test_diff_selection_round_trips_through_trace_selection_dict(tmp_path):
+    from nsys_ai import profile as profile_mod
+    from nsys_ai.annotation import TraceSelection
+    from nsys_ai.diff import diff_profiles
+
+    before = tmp_path / "before.sqlite"
+    after = tmp_path / "after.sqlite"
+    _make_profile(str(before), kernels=[(0, 10_000_000, 0, 7, 1, 1, 2)])
+    _make_profile(str(after), kernels=[(0, 30_000_000, 0, 7, 1, 1, 2)])
+
+    with profile_mod.open(str(before)) as b, profile_mod.open(str(after)) as a:
+        diff = diff_profiles(b, a, gpu=0, limit=10)
+
+    selection = diff.top_regressions[0].selection
+    assert selection is not None
+    assert TraceSelection.from_dict(selection.to_dict()) == selection
+
+
+def test_diff_selection_id_includes_diff_context(tmp_path):
+    from nsys_ai import profile as profile_mod
+    from nsys_ai.diff import diff_profiles
+
+    before_a = tmp_path / "before_a.sqlite"
+    before_b = tmp_path / "before_b.sqlite"
+    after = tmp_path / "after.sqlite"
+    _make_profile(str(before_a), kernels=[(0, 10_000_000, 0, 7, 1, 1, 2)])
+    _make_profile(str(before_b), kernels=[(0, 5_000_000, 0, 7, 1, 1, 2)])
+    _make_profile(str(after), kernels=[(0, 30_000_000, 0, 7, 1, 1, 2)])
+
+    with profile_mod.open(str(before_a)) as b1, profile_mod.open(str(after)) as a:
+        first = diff_profiles(b1, a, gpu=0, limit=10)
+    with profile_mod.open(str(before_b)) as b2, profile_mod.open(str(after)) as a:
+        second = diff_profiles(b2, a, gpu=0, limit=10)
+
+    first_selection = first.top_regressions[0].selection
+    second_selection = second.top_regressions[0].selection
+    assert first_selection is not None
+    assert second_selection is not None
+    assert first_selection.id != second_selection.id
+
+
+def test_diff_node_wide_selection_omits_gpu_ids(tmp_path):
+    from nsys_ai import profile as profile_mod
+    from nsys_ai.diff import diff_profiles
+
+    before = tmp_path / "before.sqlite"
+    after = tmp_path / "after.sqlite"
+    _make_profile(str(before), kernels=[(0, 10_000_000, 0, 7, 1, 1, 2)])
+    _make_profile(str(after), kernels=[(0, 30_000_000, 0, 7, 1, 1, 2)])
+
+    with profile_mod.open(str(before)) as b, profile_mod.open(str(after)) as a:
+        diff = diff_profiles(b, a, gpu=None, limit=10)
+
+    selection = diff.top_regressions[0].selection
+    assert selection is not None
+    assert selection.gpu_ids is None
+    assert "gpu_ids" not in selection.to_dict()
+
+
+def test_diff_without_top_regressions_has_empty_selection_lists(tmp_path):
+    from nsys_ai import profile as profile_mod
+    from nsys_ai.diff import diff_profiles
+    from nsys_ai.diff_render import to_diff_json
+
+    before = tmp_path / "before.sqlite"
+    after = tmp_path / "after.sqlite"
+    _make_profile(str(before), kernels=[(0, 10_000_000, 0, 7, 1, 1, 2)])
+    _make_profile(str(after), kernels=[(0, 10_000_000, 0, 7, 1, 1, 2)])
+
+    with profile_mod.open(str(before)) as b, profile_mod.open(str(after)) as a:
+        diff = diff_profiles(b, a, gpu=0, limit=10)
+
+    assert diff.top_regressions == []
+    assert diff.top_improvements == []
+    payload = json.loads(to_diff_json(diff))
+    assert payload["top_regressions"] == []
+    assert payload["top_improvements"] == []
+
+
 def test_diff_cli_json_output(tmp_path):
     before = tmp_path / "before.sqlite"
     after = tmp_path / "after.sqlite"
@@ -528,6 +661,47 @@ def test_diff_tools_run_diff_tool_and_openai_tools(tmp_path):
     prompt = build_diff_system_prompt(ctx, "/before.sqlite", "/after.sqlite", snapshot=None)
     assert "Before profile:" in prompt and "After profile:" in prompt
     assert "/before.sqlite" in prompt and "/after.sqlite" in prompt
+
+
+def test_diff_tools_global_diff_payload_includes_selection(tmp_path):
+    from nsys_ai import profile as profile_mod
+    from nsys_ai.diff_tools import DiffContext, get_global_diff
+
+    before = tmp_path / "before.sqlite"
+    after = tmp_path / "after.sqlite"
+    _make_profile(str(before), kernels=[(0, 10_000_000, 0, 7, 1, 1, 2)])
+    _make_profile(str(after), kernels=[(0, 30_000_000, 0, 7, 1, 1, 2)])
+
+    with profile_mod.open(str(before)) as b, profile_mod.open(str(after)) as a:
+        ctx = DiffContext(before=b, after=a, trim=None, marker="step")
+        payload = get_global_diff(ctx, target_gpu=0)
+
+    selection = payload["top_regressions"][0]["selection"]
+    assert selection["id"].startswith("sel_diff_")
+    assert selection["source"] == "diff"
+    assert selection["profile_id"].startswith("nsys1:")
+    assert selection["gpu_ids"] == [0]
+    assert "kA" in selection["label"]
+
+
+def test_diff_tools_top_k_payload_includes_selection(tmp_path):
+    from nsys_ai import profile as profile_mod
+    from nsys_ai.diff import diff_profiles
+    from nsys_ai.diff_tools import _top_k_payload
+
+    before = tmp_path / "before.sqlite"
+    after = tmp_path / "after.sqlite"
+    _make_profile(str(before), kernels=[(0, 10_000_000, 0, 7, 1, 1, 2)])
+    _make_profile(str(after), kernels=[(0, 30_000_000, 0, 7, 1, 1, 2)])
+
+    with profile_mod.open(str(before)) as b, profile_mod.open(str(after)) as a:
+        summary = diff_profiles(b, a, gpu=0, limit=10)
+
+    regressions, _improvements, _others_ms = _top_k_payload(summary, top_n=5)
+    selection = regressions[0]["selection"]
+    assert selection["source"] == "diff"
+    assert selection["profile_id"] == summary.after.profile_id
+    assert selection["gpu_ids"] == [0]
 
 
 def test_diff_tools_phase_c_prompt_export():

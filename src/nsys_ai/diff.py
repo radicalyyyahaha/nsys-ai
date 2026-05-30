@@ -10,8 +10,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
+from .annotation import TraceSelection
 from .fingerprint import get_profile_id
 from .overlap import overlap_analysis
 from .profile import Profile
@@ -83,6 +84,7 @@ class KernelDiff:
     after_share: float
     delta_share: float
     classification: str  # regression|improvement|new|removed|neutral
+    selection: TraceSelection | None = None
 
 
 @dataclass(frozen=True)
@@ -354,6 +356,35 @@ def _classify_delta(delta_ns: int, before_ns: int, after_ns: int) -> str:
     return "neutral"
 
 
+def _diff_selection(
+    kd: KernelDiff,
+    profile_id: str,
+    gpu: int | None,
+    diff_id: str,
+) -> TraceSelection:
+    selection_key = json.dumps(
+        {
+            "diff_id": diff_id,
+            "kernel_key": kd.key,
+            "before_total_ns": kd.before_total_ns,
+            "after_total_ns": kd.after_total_ns,
+            "before_count": kd.before_count,
+            "after_count": kd.after_count,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    key_hash = hashlib.sha256(selection_key).hexdigest()[:12]
+    delta_ms = kd.delta_ns / 1e6
+    return TraceSelection(
+        id=f"sel_diff_{key_hash}",
+        profile_id=profile_id,
+        source="diff",
+        gpu_ids=[gpu] if gpu is not None else None,
+        label=f"{kd.name} {delta_ms:+.2f}ms",
+    )
+
+
 def diff_profiles(
     before_prof: Profile,
     after_prof: Profile,
@@ -455,6 +486,28 @@ def diff_profiles(
     improvements = [k for k in kernel_diffs if k.delta_ns < 0]
     regressions.sort(key=sort_key, reverse=True)
     improvements.sort(key=sort_key)  # most negative first
+    diff_id = _make_diff_id(
+        before.profile_id,
+        after.profile_id,
+        {
+            "gpu": gpu,
+            "trim_before": trim_before,
+            "trim_after": trim_after,
+            "limit": limit,
+            "sort": sort,
+            "nvtx_limit": nvtx_limit,
+        },
+    )
+    limited_regressions = regressions[: max(0, int(limit))]
+    limited_improvements = improvements[: max(0, int(limit))]
+    limited_regressions = [
+        replace(k, selection=_diff_selection(k, after.profile_id, gpu, diff_id))
+        for k in limited_regressions
+    ]
+    limited_improvements = [
+        replace(k, selection=_diff_selection(k, after.profile_id, gpu, diff_id))
+        for k in limited_improvements
+    ]
 
     overlap_before = before.overlap
     overlap_after = after.overlap
@@ -485,19 +538,6 @@ def diff_profiles(
         if step_time_before_ms > 0:
             step_time_delta_pct = round(delta / step_time_before_ms * 100.0, 2)
     verdict = compute_verdict(step_time_delta_pct, comparability_confidence)
-    diff_id = _make_diff_id(
-        before.profile_id,
-        after.profile_id,
-        {
-            "gpu": gpu,
-            "trim_before": trim_before,
-            "trim_after": trim_after,
-            "limit": limit,
-            "sort": sort,
-            "nvtx_limit": nvtx_limit,
-        },
-    )
-
     return ProfileDiffSummary(
         before=before,
         after=after,
@@ -507,8 +547,8 @@ def diff_profiles(
         overlap_before=overlap_before,
         overlap_after=overlap_after,
         overlap_delta=overlap_delta,
-        top_regressions=regressions[: max(0, int(limit))],
-        top_improvements=improvements[: max(0, int(limit))],
+        top_regressions=limited_regressions,
+        top_improvements=limited_improvements,
         verdict=verdict,
         comparability_confidence=comparability_confidence,
         category_attribution=category_attribution,
