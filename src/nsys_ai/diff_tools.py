@@ -901,7 +901,9 @@ def _resolve_launch_config_windows(
     if iteration_index is None:
         return ctx.trim, ctx.trim, None
     bounds = get_iteration_boundaries(ctx, marker=ctx.marker, target_gpu=target_gpu)
-    if iteration_index >= len(bounds["boundaries"]):
+    # Reject negatives explicitly: Python would otherwise let -1 silently index
+    # the last iteration, contradicting the "out of range" contract.
+    if iteration_index < 0 or iteration_index >= len(bounds["boundaries"]):
         return (
             None,
             None,
