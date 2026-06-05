@@ -118,6 +118,81 @@ def _make_profile_with_launch_config(
     conn.close()
 
 
+def _make_profile_with_memory_usage(
+    path: str,
+    *,
+    events: list[tuple],
+    kernels: list[tuple] | None = None,
+    nvtx: list[tuple] | None = None,
+    runtime: list[tuple] | None = None,
+    include_memory_table: bool = True,
+):
+    """
+    Minimal profile with CUDA_GPU_MEMORY_USAGE_EVENTS.
+
+    events entries:
+      (start_ns, deviceId, bytes, memoryOperationType)
+
+    memoryOperationType follows Nsight Systems: 0 = alloc, 1 = free.
+    """
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE StringIds(id INT PRIMARY KEY, value TEXT)")
+    conn.execute(
+        "CREATE TABLE CUPTI_ACTIVITY_KIND_KERNEL("
+        "start INT, [end] INT, deviceId INT, streamId INT, correlationId INT, "
+        "shortName INT, demangledName INT)"
+    )
+    conn.execute(
+        "CREATE TABLE CUPTI_ACTIVITY_KIND_RUNTIME(globalTid INT, correlationId INT, start INT, [end] INT)"
+    )
+    conn.execute("CREATE TABLE NVTX_EVENTS(text TEXT, globalTid INT, start INT, [end] INT)")
+    conn.executemany(
+        "INSERT INTO StringIds(id, value) VALUES(?,?)",
+        [
+            (1, "kA"),
+            (2, "kA_dem"),
+            (3, "kB"),
+            (4, "kB_dem"),
+        ],
+    )
+
+    if kernels is None:
+        devices = sorted({int(e[1]) for e in events}) or [0]
+        kernels = [
+            (0, 100_000_000, dev, 7, idx + 1, 1, 2)
+            for idx, dev in enumerate(devices)
+        ]
+    conn.executemany(
+        "INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL("
+        "start, [end], deviceId, streamId, correlationId, shortName, demangledName) "
+        "VALUES(?,?,?,?,?,?,?)",
+        kernels,
+    )
+    if runtime:
+        conn.executemany(
+            "INSERT INTO CUPTI_ACTIVITY_KIND_RUNTIME(globalTid, correlationId, start, [end]) "
+            "VALUES(?,?,?,?)",
+            runtime,
+        )
+    if nvtx:
+        conn.executemany(
+            "INSERT INTO NVTX_EVENTS(text, globalTid, start, [end]) VALUES(?,?,?,?)",
+            nvtx,
+        )
+    if include_memory_table:
+        conn.execute(
+            "CREATE TABLE CUDA_GPU_MEMORY_USAGE_EVENTS("
+            "start INT, deviceId INT, bytes INT, memoryOperationType INT)"
+        )
+        conn.executemany(
+            "INSERT INTO CUDA_GPU_MEMORY_USAGE_EVENTS(start, deviceId, bytes, memoryOperationType) "
+            "VALUES(?,?,?,?)",
+            events,
+        )
+    conn.commit()
+    conn.close()
+
+
 def _make_profile_with_runtime(
     path: str,
     *,
@@ -1196,6 +1271,159 @@ def test_get_launch_config_diff_negative_iteration_index_out_of_range(tmp_path):
     # -1 must NOT silently select the last iteration via Python indexing.
     assert "out of range" in out["error"]
     assert out["iteration_index"] == -1
+
+
+def test_get_memory_profile_diff_returns_peak_counts_net_delta_and_explanation(tmp_path):
+    from nsys_ai import profile as profile_mod
+    from nsys_ai.diff_tools import DiffContext, get_memory_profile_diff
+
+    mib = 1024 * 1024
+    before = tmp_path / "before.sqlite"
+    after = tmp_path / "after.sqlite"
+    _make_profile_with_memory_usage(
+        str(before),
+        events=[
+            (0, 0, 1024 * mib, 0),  # pre-window baseline
+            (10, 0, 512 * mib, 0),
+            (20, 0, 128 * mib, 1),
+            (200_000_000, 0, 10_000 * mib, 0),  # outside ctx.trim; must not win peak
+        ],
+    )
+    _make_profile_with_memory_usage(
+        str(after),
+        events=[
+            (0, 0, 1024 * mib, 0),
+            (10, 0, 1024 * mib, 0),
+            (20, 0, 128 * mib, 1),
+            (200_000_000, 0, 10_000 * mib, 0),
+        ],
+    )
+
+    with profile_mod.open(str(before)) as b, profile_mod.open(str(after)) as a:
+        ctx = DiffContext(before=b, after=a, trim=(5, 100), marker="sample_0")
+        out = get_memory_profile_diff(ctx, target_gpu=0)
+
+    assert "error" not in out
+    assert out["before"]["baseline_vram_bytes"] == 1024 * mib
+    assert out["before"]["peak_vram_bytes"] == 1536 * mib
+    assert out["after"]["peak_vram_bytes"] == 2048 * mib
+    assert out["delta"]["peak_vram_bytes"] == {
+        "before": 1536 * mib,
+        "after": 2048 * mib,
+        "delta": 512 * mib,
+    }
+    assert out["before"]["alloc_count"] == 1
+    assert out["before"]["free_count"] == 1
+    assert out["before"]["allocated_bytes"] == 512 * mib
+    assert out["before"]["freed_bytes"] == 128 * mib
+    assert out["before"]["net_delta_bytes"] == 384 * mib
+    assert out["after"]["net_delta_bytes"] == 896 * mib
+    assert out["before"]["event_window_ns"] == [10, 20]
+    assert "10000" not in out["explanation"]
+    assert "peak VRAM" in out["explanation"]
+    assert "higher peak" in out["explanation"]
+
+
+def test_get_memory_profile_diff_default_target_gpu_aggregates_all_gpus(tmp_path):
+    from nsys_ai import profile as profile_mod
+    from nsys_ai.diff_tools import DiffContext, get_memory_profile_diff
+
+    before = tmp_path / "before.sqlite"
+    after = tmp_path / "after.sqlite"
+    _make_profile_with_memory_usage(
+        str(before),
+        events=[
+            (0, 0, 100, 0),
+            (0, 1, 200, 0),
+        ],
+    )
+    _make_profile_with_memory_usage(
+        str(after),
+        events=[
+            (0, 0, 100, 0),
+            (0, 1, 300, 0),
+        ],
+    )
+
+    with profile_mod.open(str(before)) as b, profile_mod.open(str(after)) as a:
+        ctx = DiffContext(before=b, after=a, trim=None, marker="sample_0")
+        all_gpus = get_memory_profile_diff(ctx)
+        gpu1 = get_memory_profile_diff(ctx, target_gpu=1)
+
+    assert all_gpus["before"]["peak_vram_bytes"] == 300
+    assert all_gpus["after"]["peak_vram_bytes"] == 400
+    assert all_gpus["delta"]["peak_vram_bytes"]["delta"] == 100
+    assert gpu1["before"]["peak_vram_bytes"] == 200
+    assert gpu1["after"]["peak_vram_bytes"] == 300
+    assert gpu1["delta"]["peak_vram_bytes"]["delta"] == 100
+
+
+def test_get_memory_profile_diff_uses_iteration_window(tmp_path):
+    from nsys_ai import profile as profile_mod
+    from nsys_ai.diff_tools import DiffContext, get_memory_profile_diff
+
+    before = tmp_path / "before.sqlite"
+    after = tmp_path / "after.sqlite"
+    kernels = [(1_000_000_000, 2_000_000_000, 0, 7, 1, 1, 2)]
+    nvtx = [("step", 1, 500_000_000, 2_500_000_000)]
+    runtime = [(1, 1, 900_000_000, 1_000_000_000)]
+    _make_profile_with_memory_usage(
+        str(before),
+        events=[
+            (100_000_000, 0, 1000, 0),
+            (1_000_000_000, 0, 500, 0),
+            (3_000_000_000, 0, 9999, 0),
+        ],
+        kernels=kernels,
+        nvtx=nvtx,
+        runtime=runtime,
+    )
+    _make_profile_with_memory_usage(
+        str(after),
+        events=[
+            (100_000_000, 0, 1000, 0),
+            (1_000_000_000, 0, 700, 0),
+            (3_000_000_000, 0, 9999, 0),
+        ],
+        kernels=kernels,
+        nvtx=nvtx,
+        runtime=runtime,
+    )
+
+    with profile_mod.open(str(before)) as b, profile_mod.open(str(after)) as a:
+        ctx = DiffContext(before=b, after=a, trim=None, marker="step")
+        out = get_memory_profile_diff(ctx, iteration_index=0, target_gpu=0)
+
+    assert "error" not in out
+    assert out["trim_before_ns"] == [1_000_000_000, 2_000_000_000]
+    assert out["trim_after_ns"] == [1_000_000_000, 2_000_000_000]
+    assert out["before"]["baseline_vram_bytes"] == 1000
+    assert out["before"]["peak_vram_bytes"] == 1500
+    assert out["after"]["peak_vram_bytes"] == 1700
+    assert out["delta"]["peak_vram_bytes"]["delta"] == 200
+
+
+def test_get_memory_profile_diff_not_available_when_table_missing(tmp_path):
+    from nsys_ai import profile as profile_mod
+    from nsys_ai.diff_tools import DiffContext, get_memory_profile_diff
+
+    before = tmp_path / "before.sqlite"
+    after = tmp_path / "after.sqlite"
+    _make_profile_with_memory_usage(str(before), events=[(0, 0, 100, 0)])
+    _make_profile_with_memory_usage(
+        str(after),
+        events=[],
+        include_memory_table=False,
+    )
+
+    with profile_mod.open(str(before)) as b, profile_mod.open(str(after)) as a:
+        ctx = DiffContext(before=b, after=a, trim=None, marker="sample_0")
+        out = get_memory_profile_diff(ctx)
+
+    assert out["error"] == "not available"
+    assert out["tables_present"] == {"before": True, "after": False}
+    assert "bytes" in out["available_columns"]["before"]
+    assert out["available_columns"]["after"] == []
 
 
 # ---------------------------------------------------------------------------
