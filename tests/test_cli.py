@@ -55,6 +55,62 @@ def test_subcommands():
     assert ",agent}" not in usage_line
 
 
+def test_custom_help_mentions_default_profile_shortcut():
+    """The getting-started help should advertise the bare profile shortcut."""
+    result = subprocess.run(
+        [sys.executable, "-m", "nsys_ai", "help"], capture_output=True, text=True
+    )
+    assert result.returncode == 0
+    assert "nsys-ai <profile>" in result.stdout
+    assert "Open web timeline UI (default)" in result.stdout
+
+
+def test_default_profile_command_routes_to_timeline_web():
+    """Bare profile paths should keep working as the default web timeline command."""
+    from nsys_ai.cli.app import _normalize_default_profile_command
+
+    assert _normalize_default_profile_command(["nsys-ai", "profile.nsys-rep"]) == [
+        "nsys-ai",
+        "timeline-web",
+        "profile.nsys-rep",
+    ]
+    assert _normalize_default_profile_command(
+        ["nsys-ai", "profile.nsys-rep", "--no-browser"]
+    ) == [
+        "nsys-ai",
+        "timeline-web",
+        "profile.nsys-rep",
+        "--no-browser",
+    ]
+
+
+def test_default_profile_command_accepts_supported_profile_paths_only():
+    """The documented shorthand applies only to profile paths the opener supports."""
+    from nsys_ai.cli.app import _normalize_default_profile_command
+
+    assert _normalize_default_profile_command(["nsys-ai", "profile.sqlite"])[1] == "timeline-web"
+    assert _normalize_default_profile_command(["nsys-ai", "PROFILE.SQLITE"]) == [
+        "nsys-ai",
+        "timeline-web",
+        "PROFILE.SQLITE",
+    ]
+    assert _normalize_default_profile_command(["nsys-ai", "profile.nsys-rep.zst"]) == [
+        "nsys-ai",
+        "profile.nsys-rep.zst",
+    ]
+
+
+def test_default_profile_command_leaves_subcommands_unchanged():
+    """Named commands still parse through the normal public/legacy command tables."""
+    from nsys_ai.cli.app import _normalize_default_profile_command
+
+    assert _normalize_default_profile_command(["nsys-ai", "open", "profile.nsys-rep"]) == [
+        "nsys-ai",
+        "open",
+        "profile.nsys-rep",
+    ]
+
+
 def test_chat_subcommand_help():
     """chat subcommand should have --help and accept a profile argument."""
     result = subprocess.run(
