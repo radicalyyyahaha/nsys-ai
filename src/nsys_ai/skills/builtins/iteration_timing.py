@@ -33,10 +33,14 @@ def _to_findings(rows: list[dict]) -> list:
     from nsys_ai.annotation import Finding
 
     findings = []
-    if len(rows) < 3:
+    # Only judge variance over real iterations — a loose NVTX marker can match
+    # many sub-ms op ranges whose contaminated median makes every real iteration
+    # look thousands of percent slow.
+    real = [it for it in rows if it.get("is_real_iteration", True)]
+    if len(real) < 3:
         return findings
 
-    durs = [it["duration_ms"] for it in rows if "duration_ms" in it]
+    durs = [it["duration_ms"] for it in real if "duration_ms" in it]
     if not durs:
         return findings
 
@@ -44,7 +48,7 @@ def _to_findings(rows: list[dict]) -> list:
     if med <= 0:
         return findings
 
-    for it in rows:
+    for it in real:
         if it.get("duration_ms", 0) > 1.5 * med:
             pct = 100 * it["duration_ms"] / med
             # Prefer nanosecond-precision timestamps if available; fall back to seconds-based values.
@@ -88,16 +92,27 @@ def _format(rows):
         if is_heuristic
         else "── Iteration Timings ──"
     )
+    # Show real iterations only — a loose NVTX marker can match hundreds of
+    # sub-iteration op ranges, and listing all of them buries the signal.
+    real = [it for it in rows if it.get("is_real_iteration", True)]
+    display = real if real else rows
+    noise_count = len(rows) - len(real)
+
     lines = [title]
-    for it in rows:
+    for it in display:
         lines.append(
             f"  iter {it['iteration']:2d}  "
             f"{it['duration_ms']:8.1f}ms  "
             f"({it['kernel_count']} kernels, {it['nccl_count']} NCCL)  "
             f"compute={it['compute_ms']:.1f}ms"
         )
-    if len(rows) > 1:
-        durs = [it["duration_ms"] for it in rows]
+    if noise_count:
+        lines.append(
+            f"  … {noise_count} sub-iteration NVTX range(s) filtered as noise "
+            f"(marker matched op-level annotations)"
+        )
+    if len(display) > 1:
+        durs = [it["duration_ms"] for it in display]
         avg = sum(durs) / len(durs)
         lines.append(f"\n  Average: {avg:.1f}ms  Min: {min(durs):.1f}ms  Max: {max(durs):.1f}ms")
     return "\n".join(lines)
