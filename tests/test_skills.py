@@ -162,6 +162,47 @@ def test_skill_execute_json_serializable():
     conn.close()
 
 
+def test_stream_concurrency_keys_streams_by_device():
+    """Same numeric stream id on different GPUs must not be merged."""
+    from nsys_ai.skills.registry import get_skill
+
+    conn = sqlite3.connect(":memory:")
+    conn.executescript("""
+        CREATE TABLE CUPTI_ACTIVITY_KIND_KERNEL (
+            deviceId INT,
+            streamId INT,
+            correlationId INT,
+            start INT,
+            [end] INT,
+            shortName INT
+        );
+        INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL VALUES
+            (0, 7,  1, 0,        43000000, 1),
+            (0, 7,  2, 57000000, 100000000, 1),
+            (1, 17, 3, 0,        43000000, 1),
+            (1, 17, 4, 57000000, 100000000, 1),
+            (2, 17, 5, 0,        43000000, 1),
+            (2, 17, 6, 57000000, 100000000, 1),
+            (3, 17, 7, 0,        43000000, 1),
+            (3, 17, 8, 57000000, 100000000, 1);
+    """)
+
+    skill = get_skill("stream_concurrency")
+    rows = skill.execute(conn, limit=10)
+
+    by_device_stream = {(row["deviceId"], row["streamId"]): row for row in rows}
+    assert set(by_device_stream) == {(0, 7), (1, 17), (2, 17), (3, 17)}
+    assert all(row["stream_util_pct"] == pytest.approx(86.0) for row in rows)
+    assert rows[0]["active_streams"] == 4
+    assert rows[0]["sum_util_pct"] == pytest.approx(344.0)
+
+    formatted = skill.format_rows(rows)
+    assert "GPU" in formatted
+    assert "Stream" in formatted
+    assert "  1 s   17" in formatted
+    conn.close()
+
+
 # ---------------------------------------------------------------------------
 # C4: Markdown skill persistence tests
 # ---------------------------------------------------------------------------
