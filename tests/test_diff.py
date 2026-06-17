@@ -2328,6 +2328,7 @@ def test_diff_json_includes_communication_and_idle_summary_axes(tmp_path):
 
     comm = payload["communication_summary"]
     assert comm["axis"] == "communication"
+    assert comm["total_basis"] == "exposed comm"
     assert comm["before_ms"] == 7.0
     assert comm["after_ms"] == 9.0
     assert comm["delta_ms"] == 2.0
@@ -2343,6 +2344,7 @@ def test_diff_json_includes_communication_and_idle_summary_axes(tmp_path):
 
     idle = payload["idle_summary"]
     assert idle["axis"] == "idle"
+    assert idle["total_basis"] == "wall-clock idle"
     assert idle["before_ms"] == 13.0
     assert idle["after_ms"] == 26.0
     assert idle["delta_ms"] == 13.0
@@ -2357,6 +2359,38 @@ def test_diff_json_includes_communication_and_idle_summary_axes(tmp_path):
     assert gap["selection"]["start_ns"] == 10 * ms
     assert gap["selection"]["end_ns"] == 45 * ms
     assert gap["selection"]["gpu_ids"] == [0]
+
+
+def test_diff_compute_only_omits_empty_summary_axes(tmp_path):
+    """A compute-only diff must not render empty communication/idle axis sections."""
+    before = tmp_path / "before.sqlite"
+    after = tmp_path / "after.sqlite"
+    ms = 1_000_000
+    # One compute kernel each: no NCCL, no inter-kernel gaps -> both axes empty.
+    _make_profile(str(before), kernels=[(0, 10 * ms, 0, 7, 1, 1, 2)])
+    _make_profile(str(after), kernels=[(0, 13 * ms, 0, 7, 1, 1, 2)])
+
+    js = subprocess.run(
+        [sys.executable, "-m", "nsys_ai", "diff", str(before), str(after),
+         "--gpu", "0", "--format", "json"],
+        capture_output=True,
+        text=True,
+    )
+    assert js.returncode == 0, js.stderr
+    payload = json.loads(js.stdout)
+    # Omitted (null), not an empty "Total 0 -> 0" object.
+    assert payload["communication_summary"] is None
+    assert payload["idle_summary"] is None
+
+    term = subprocess.run(
+        [sys.executable, "-m", "nsys_ai", "diff", str(before), str(after),
+         "--gpu", "0", "--no-ai"],
+        capture_output=True,
+        text=True,
+    )
+    assert term.returncode == 0, term.stderr
+    assert "Communication/NCCL Summary" not in term.stdout
+    assert "Idle Gap Summary" not in term.stdout
 
 
 def test_v01_confidence_separates_schema_and_gpu_mismatch():

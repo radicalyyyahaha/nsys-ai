@@ -665,6 +665,12 @@ def build_communication_summary(
             )
         )
 
+    # Omit the axis entirely when there is nothing to show — no moving entries
+    # and no exposed communication on either side. Keeps compute-only diffs from
+    # rendering an empty "Total 0 -> 0" section, and makes the None-guards in the
+    # renderers live rather than dead code.
+    if not entries and before_ms == 0 and after_ms == 0:
+        return None
     entries.sort(key=lambda e: abs(e.delta_ms), reverse=True)
     return DiffAxisSummary(
         axis="communication",
@@ -825,6 +831,11 @@ def build_idle_summary(
             )
         )
 
+    # Omit the axis when there is no idle to report (no moving gaps and no
+    # wall-clock idle on either side), so the section disappears instead of
+    # rendering an empty "Total 0 -> 0".
+    if not entries and before_ms == 0 and after_ms == 0:
+        return None
     entries.sort(key=lambda e: abs(e.delta_ms), reverse=True)
     return DiffAxisSummary(
         axis="idle",

@@ -42,6 +42,7 @@ def _axis_summary_to_dict(axis):
     return {
         "axis": axis.axis,
         "title": axis.title,
+        "total_basis": _axis_total_basis(axis.axis),
         "before_ms": axis.before_ms,
         "after_ms": axis.after_ms,
         "delta_ms": axis.delta_ms,
@@ -68,6 +69,20 @@ def _axis_summary_to_dict(axis):
 def _fmt_ms_delta(ms: float) -> str:
     sign = "+" if ms > 0 else ""
     return f"{sign}{ms:.3f}ms"
+
+
+# The axis total and the per-entry values measure different things: the total is
+# the HTA category (exposed communication / wall-clock idle), while entries are
+# raw per-item amounts that can exceed it when work overlaps. Label them so the
+# difference doesn't read as a bug.
+def _axis_total_basis(axis_name: str) -> str:
+    return {"communication": "exposed comm", "idle": "wall-clock idle"}.get(axis_name, "total")
+
+
+_AXIS_ENTRY_FOOTNOTE = (
+    "per-item values are raw component time and can exceed the total above when "
+    "compute, communication, and idle overlap"
+)
 
 
 def format_diff_terminal(
@@ -122,7 +137,8 @@ def format_diff_terminal(
         lines.append(axis.title)
         lines.append("─" * 60)
         lines.append(
-            f"Total: {axis.before_ms:.3f}ms → {axis.after_ms:.3f}ms  (Δ {_fmt_ms_delta(axis.delta_ms)})"
+            f"Total ({_axis_total_basis(axis.axis)}): "
+            f"{axis.before_ms:.3f}ms → {axis.after_ms:.3f}ms  (Δ {_fmt_ms_delta(axis.delta_ms)})"
         )
         if axis.entries:
             lines.append(f"{'Δ':>11}  | {'Before':>9} | {'After':>9} | Item")
@@ -131,6 +147,7 @@ def format_diff_terminal(
                 lines.append(
                     f"{_fmt_ms_delta(e.delta_ms):>11}  | {e.before_ms:>9.3f} | {e.after_ms:>9.3f} | {e.label}"
                 )
+            lines.append(f"({_AXIS_ENTRY_FOOTNOTE})")
         else:
             lines.append("(no changed entries)")
         lines.append("")
@@ -316,7 +333,8 @@ def format_diff_markdown(
         md.append(f"### {axis.title}")
         md.append("")
         md.append(
-            f"- **Total**: `{axis.before_ms:.3f}ms` → `{axis.after_ms:.3f}ms` (Δ `{_fmt_ms_delta(axis.delta_ms)}`)"
+            f"- **Total ({_axis_total_basis(axis.axis)})**: `{axis.before_ms:.3f}ms` → "
+            f"`{axis.after_ms:.3f}ms` (Δ `{_fmt_ms_delta(axis.delta_ms)}`)"
         )
         md.append("")
         if not axis.entries:
@@ -329,6 +347,8 @@ def format_diff_markdown(
             md.append(
                 f"| `{_fmt_ms_delta(e.delta_ms)}` | `{e.label}` | `{e.before_ms:.3f}ms` | `{e.after_ms:.3f}ms` | `{e.classification}` |"
             )
+        md.append("")
+        md.append(f"_{_AXIS_ENTRY_FOOTNOTE}._")
         md.append("")
 
     add_axis_table(data.communication_summary)
@@ -433,7 +453,8 @@ def format_diff_markdown_multi(
         md.append(f"### {axis.title}")
         md.append("")
         md.append(
-            f"- **Total**: `{axis.before_ms:.3f}ms` → `{axis.after_ms:.3f}ms` (Δ `{_fmt_ms_delta(axis.delta_ms)}`)"
+            f"- **Total ({_axis_total_basis(axis.axis)})**: `{axis.before_ms:.3f}ms` → "
+            f"`{axis.after_ms:.3f}ms` (Δ `{_fmt_ms_delta(axis.delta_ms)}`)"
         )
         md.append("")
         if not axis.entries:
@@ -446,6 +467,8 @@ def format_diff_markdown_multi(
             md.append(
                 f"| `{_fmt_ms_delta(e.delta_ms)}` | `{e.label}` | `{e.before_ms:.3f}ms` | `{e.after_ms:.3f}ms` | `{e.classification}` |"
             )
+        md.append("")
+        md.append(f"_{_AXIS_ENTRY_FOOTNOTE}._")
         md.append("")
 
     add_global_axis(g.communication_summary)
